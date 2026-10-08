@@ -10,7 +10,7 @@ struct Voice {
 }
 
 #[derive(Clone)]
-struct Mixer {
+pub struct Mixer {
     sample: Vec<f32>,
     voices: [Voice; MAX_VOICES],
     gain: f32,
@@ -81,7 +81,7 @@ impl Mixer {
         }
 
         // Sum all active voices into the buffer
-        for voice in self.voices.iter() {
+        for voice in self.voices.iter_mut() {
             if voice.active && voice.pos < self.sample.len() {
                 let val = self.sample[voice.pos] * self.gain;
                 // Add to each sample in the output buffer

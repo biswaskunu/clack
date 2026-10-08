@@ -1,7 +1,10 @@
 mod input;
+mod mixer;
 
 use clap::Parser;
 use ctrlc;
+use crossbeam_channel:: bounded;
+use evdev::InputEvent;
 
 #[derive(Parser)]
 #[command(name = "clack")]
@@ -21,7 +24,9 @@ fn main() {
         std::process::exit(2);
     }
 
-    let _gain = (cli.volume as f32 / 100.0).powi(2);
+    let gain = (cli.volume as f32 / 100.0).powi(2);
+
+    let (tx, _rx) = bounded::<InputEvent>(64);
 
     let keyboards = input::InputHandler::list_keyboards();
     if keyboards.is_empty() {
@@ -30,7 +35,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    input::InputHandler::start_reading(keyboards);
+    let mut mixer = mixer::Mixer::new(gain);
+
+    input::InputHandler::start_reading(keyboards, tx);
 
     if cli.verbose {
         println!(

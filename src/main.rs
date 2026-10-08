@@ -1,9 +1,7 @@
 mod input;
 
 use clap::Parser;
-use crossbeam_channel::bounded;
 use ctrlc;
-use evdev::InputEvent;
 
 #[derive(Parser)]
 #[command(name = "clack")]
@@ -32,9 +30,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let (tx, _rx) = bounded::<InputEvent>(64);
-
-    input::InputHandler::start_reading(keyboards, tx);
+    input::InputHandler::start_reading(keyboards);
 
     if cli.verbose {
         println!(

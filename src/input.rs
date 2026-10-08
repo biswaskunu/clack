@@ -1,4 +1,4 @@
-use evdev::{Device, InputEvent, KeyCode, enumerate};
+use evdev::{Device, KeyCode, enumerate};
 
 pub struct InputHandler;
 
@@ -22,9 +22,8 @@ impl InputHandler {
         keyboards
     }
 
-    pub fn start_reading(keyboards: Vec<Device>, tx: crossbeam_channel::Sender<InputEvent>) {
+    pub fn start_reading(keyboards: Vec<Device>) {
         for mut keyboard in keyboards {
-            let tx = tx.clone();
             std::thread::spawn(move || {
                 // Read events directly from the device
                 if let Ok(mut events) = keyboard.fetch_events() {
@@ -32,7 +31,7 @@ impl InputHandler {
                         // value 1 = press, value 0 = release, value 2 = auto-repeat
                         // Only handle press events
                         if event.value() == 1 {
-                            let _ = tx.try_send(event);
+                            println!("press");
                         }
                     }
                 }

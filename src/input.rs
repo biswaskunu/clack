@@ -1,35 +1,40 @@
-use evdev::{Device, Key, KeyState, list_devices};
-use crossbeam_queue::Sender;
+use evdev::{Device, InputEvent, KeyCode, enumerate};
 
 pub struct InputHandler;
 
 impl InputHandler {
     pub fn list_keyboards() -> Vec<Device> {
-        let devices = list_devices().unwrap_or_default();
+        let devices = enumerate().collect::<Vec<_>>();
         let mut keyboards = Vec::new();
 
-        for dev_info in &devices {
-            let device = Device::new(dev_info).expect("Failed to open device");
-            if device.capabilities().contains(evdev::InputEventType::KEY) {
-                let keys: Vec<Key> = device.key_keys().collect();
-                if keys.contains(&Key::KeyA) {
-                    keyboards.push(device);
+        for (path, raw_dev) in devices {
+            // Check if device supports key events and has KEY_A
+            if let Some(keys) = raw_dev.supported_keys() {
+                if keys.contains(KeyCode::KEY_A) {
+                    // Open the device and add to keyboards
+                    match Device::open(&path) {
+                        Ok(device) => keyboards.push(device),
+                        Err(_) => continue,
+                    }
                 }
             }
         }
         keyboards
     }
 
-    pub fn start_reading(keyboards: Vec<Device>, tx: Sender<evdev::InputEvent>) {
-        for keyboard in keyboards {
+    pub fn start_reading(keyboards: Vec<Device>, tx: crossbeam_channel::Sender<InputEvent>) {
+        for mut keyboard in keyboards {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                if let Err(e) = keyboard.read_events(|event| {
-                    if event.value() == KeyState::Pressed {
-                        let _ = tx.try_send(event.clone());
+                // Read events directly from the device
+                if let Ok(mut events) = keyboard.fetch_events() {
+                    for event in &mut events {
+                        // value 1 = press, value 0 = release, value 2 = auto-repeat
+                        // Only handle press events
+                        if event.value() == 1 {
+                            let _ = tx.try_send(event);
+                        }
                     }
-                }) {
-                    eprintln!("clack: error reading events: {}", e);
                 }
             });
         }

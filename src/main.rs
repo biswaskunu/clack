@@ -3,7 +3,7 @@ mod mixer;
 
 use clap::Parser;
 use ctrlc;
-use crossbeam_channel:: bounded;
+use crossbeam_channel::bounded;
 use evdev::InputEvent;
 
 #[derive(Parser)]

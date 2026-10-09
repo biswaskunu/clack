@@ -19,7 +19,7 @@ clack [OPTIONS]
 
 Options:
   -v, --volume <0-100>   Output volume [default: 50]
-      --verbose          Print latency stats once per second
+      --verbose          Print latency stats once per second (not yet implemented)
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -42,7 +42,7 @@ clack --volume 60 --verbose
 | `--volume 101`, `--volume -5`, `--volume abc` | Rejected by clap with a usage error, exit code 2. |
 | Unknown flag | Rejected by clap, exit code 2. |
 
-Use a clap value parser with an integer range (`0..=100`) so validation and the error text come for free.
+Validation uses a clap value parser with an integer range (`0..=100`), so the error text comes for free.
 
 ## 3. Output design
 
@@ -52,11 +52,19 @@ Use a clap value parser with an integer range (`0..=100`) so validation and the 
 clack: listening on 2 keyboards, volume 60. Press Ctrl+C to stop.
 ```
 
+On Windows, Raw Input does not count devices, so the line reads:
+
+```
+clack: listening for keyboard input, volume 60. Press Ctrl+C to stop.
+```
+
+*(Planned: the Windows message is not yet distinct from the Linux one in code.)*
+
 ### Clean exit
 
 Nothing printed, or a single `clack: bye`. Exit code 0.
 
-### `--verbose` output
+### `--verbose` output *(planned; not implemented)*
 
 One line per second while keys are being pressed, nothing while idle:
 
@@ -79,31 +87,40 @@ If the buffer request was refused:
 [clack] buffer: 256 frames requested, backend chose 1024 (21.3 ms) -- latency will be higher
 ```
 
-Printing the device paths and names is for debugging only. Key codes are **never** printed.
+Printing device paths and names is for debugging only. Key codes are **never** printed.
 
 ## 4. Error messages
 
 Each error: what failed, then the fix. Lowercase `clack:` prefix, written to stderr, exit code 1.
 
-**No keyboards found / permission denied**
+**No keyboards found, permission denied (Linux)**
 ```
 clack: can't read keyboard input (permission denied on /dev/input).
   Fix: add your user to the 'input' group, then log out and back in:
        sudo usermod -aG input $USER
-  Note: this lets programs you run read raw keystrokes. See README "Permissions".
+  Note: this lets programs you run read raw keystrokes. See README "Linux permissions".
 ```
 
-**No keyboards found (permissions fine)**
+**No keyboards found, permissions fine (Linux)**
 ```
 clack: no keyboard devices found under /dev/input.
   Is a keyboard connected? Try: ls -l /dev/input/by-id/
 ```
 
-**No audio device**
+**No keyboard input available (Windows)**
+```
+clack: no keyboard input available.
+```
+
+*(Raw Input rarely fails this way. If registration fails, the message should say so. Not yet handled, see ARCHITECTURE.md section 13.)*
+
+**No audio device (all platforms)**
 ```
 clack: no audio output device found.
-  Check your sound settings (PipeWire / PulseAudio / ALSA) and try again.
+  Check your sound settings and try again.
 ```
+
+On Linux the sound settings hint is "(PipeWire / PulseAudio / ALSA)". On Windows, "Check your sound settings in Windows" is clearer. *(Planned: platform-specific text.)*
 
 **Audio stream failed mid-run**
 ```
@@ -114,16 +131,18 @@ clack: audio stream error: <underlying error>
 
 Short ADR-style records. Revisit by ear and by measurement, not by opinion.
 
-### D1: Read `/dev/input` with evdev instead of a global-hook crate
+### D1: Platform-native input capture, isolated per OS
 
-- **Chosen:** `evdev`, reading kernel input devices.
-- **Why:** works on X11 *and* Wayland; hook libraries built on X11 fail on Wayland.
-- **Cost:** needs `input` group membership; keystrokes become readable to that user's other programs.
-- **Revisit if:** a better-supported portal-based approach appears for Wayland.
+- **Linux:** `evdev`, reading kernel input devices. Works on X11 *and* Wayland; hook libraries built on X11 fail on Wayland.
+  - **Cost:** needs `input` group membership; keystrokes become readable to that user's other programs.
+- **Windows:** Raw Input (`WM_INPUT` on a hidden message-only window). Does not intercept keystrokes, and needs no permissions.
+  - **Cost:** needs a window and message loop, which makes the backend more code than evdev.
+- **Revisit if:** a portal-based approach appears for Wayland, or if Windows Raw Input proves unreliable on real hardware.
 
 ### D2: One click sample per press, ignore releases and auto-repeat
 
 - **Why:** a real switch actuates once per press; holding a key does not repeat the mechanical sound.
+- **Status:** implemented on Linux. **Not implemented on Windows**, where auto-repeat arrives as repeated key-down messages. The fix is to track key state per virtual key code.
 - **Later:** add a release sample (FR-9).
 
 ### D3: Preload and pre-resample the sample at startup
@@ -148,17 +167,22 @@ Short ADR-style records. Revisit by ear and by measurement, not by opinion.
 
 ### D7: Drop events rather than block when the queue is full
 
-- **Why:** blocking an input thread is harmless, but there's no scenario where the audio side should wait. A dropped click under extreme load is invisible; an audio glitch is not.
+- **Why:** blocking an input thread is harmless, but the audio side should never wait. A dropped click under extreme load is invisible; an audio glitch is not.
 
-### D8: Linux-first, with platform code isolated to `input.rs`
+### D8: Platform code isolated to `input/`
 
-- **Why:** the mixer and audio layers are already portable; porting means adding input backends.
+- **Why:** the mixer, sample, and audio layers are platform-neutral. Porting means adding an `input/<os>.rs` file, selected at compile time in `input/mod.rs`.
+
+### D9: Windows is experimental until tested on hardware
+
+- **Why:** the backend compiles on Linux (cross-checked against the Windows target) and builds in CI, but has not been run on a Windows machine. Calling it supported before a manual test would overstate the state of the code.
+- **Release note:** Windows builds are labelled untested, and the auto-repeat gap is listed.
 
 ## 6. Sound design notes
 
 - **Format:** mono WAV, 16-bit or 24-bit, 44.1 or 48 kHz; trim leading silence so the click starts at sample 0.
 - **Length:** short, around 80-200 ms. Long tails overlap and mud up fast typing.
-- **License:** CC0 only; record origin in `assets/LICENSE.md`.
+- **License:** CC0 only; record origin in `assets/LICENSE.md`. *(Source of the current `press.wav` still needs filling in.)*
 - **Normalisation:** peak around -3 dBFS so overlapping voices rarely clip.
 - **Auditioning:** test at several typing speeds. A sample that sounds great at one key per second can sound like static at ten.
 

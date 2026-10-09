@@ -1,9 +1,9 @@
 # PRD: clack (working name)
 
-**Status:** Draft v0.1
+**Status:** v0.1
 **Owner:** Biswash
 **Type:** Fun side project / weekend toy
-**Platform:** Linux only (v0.1)
+**Platform:** Linux (primary). Windows x86_64 (experimental, builds in CI, not yet tested at runtime).
 
 ---
 
@@ -21,12 +21,12 @@ The defining quality is **low latency**: the click must feel attached to the key
 
 - Membrane and laptop keyboards feel quiet and mushy; some people like the audible feedback of a mechanical board.
 - Existing tools (e.g. Mechvibes) are Electron apps: heavy on RAM, GUI-first, and often criticised for audio lag.
-- There is no minimal, native, scriptable option on Linux.
+- There is no minimal, native, scriptable option on Linux or Windows.
 
 ## 3. Target user
 
 - Primary: the author (it's a fun project and he'll use it daily).
-- Secondary: Linux users on quiet keyboards, streamers, and people who like the "thock".
+- Secondary: Linux and Windows users on quiet keyboards, streamers, and people who like the "thock".
 
 ## 4. Goals
 
@@ -35,7 +35,7 @@ The defining quality is **low latency**: the click must feel attached to the key
 | G1 | A click plays on every key press, on every connected keyboard. |
 | G2 | Keypress-to-audio software latency stays low (target p95 under 15 ms, see section 8). |
 | G3 | Volume is set once at launch via a CLI flag. |
-| G4 | Single static-ish binary, no GUI, no config file, near-zero idle CPU and small RAM. |
+| G4 | Single native binary per platform, no GUI, no config file, near-zero idle CPU and small RAM. |
 | G5 | Finishable: v0.1 should be achievable in roughly 15-18 hours total. |
 
 ## 5. Non-goals (v0.1)
@@ -43,7 +43,7 @@ The defining quality is **low latency**: the click must feel attached to the key
 Deliberately out of scope. Say no to these until v0.1 ships:
 
 - Hotkeys (mute, volume up/down), tray icon, or any GUI
-- Windows and macOS support
+- macOS support
 - Multiple sound packs, per-key sounds, or pack format compatibility
 - Pitch or velocity variation, "dynamics" based on typing speed
 - Config files, daemon or systemd mode, hotplug of keyboards
@@ -51,18 +51,18 @@ Deliberately out of scope. Say no to these until v0.1 ships:
 
 ## 6. Functional requirements
 
-| ID | Requirement | Priority |
-|----|-------------|----------|
-| FR-1 | On start, discover all keyboard input devices under `/dev/input`. | Must |
-| FR-2 | Play a click sample on each key **press** event. | Must |
-| FR-3 | Ignore auto-repeat events (holding a key must not machine-gun clicks). | Must |
-| FR-4 | `--volume <0-100>` sets output gain; default 50; out-of-range values are rejected with a clear error. | Must |
-| FR-5 | Overlapping presses must layer (fast typing never cuts a click short or drops it). | Must |
-| FR-6 | Ctrl+C exits cleanly with exit code 0. | Must |
-| FR-7 | A bundled default click sample so the binary works with no extra files. | Must |
-| FR-8 | `--verbose` prints periodic latency stats (see section 8). | Should |
-| FR-9 | Separate release-sound on key up. | Could |
-| FR-10 | `--sound <file.wav>` to use a custom sample. | Could |
+| ID | Requirement | Priority | v0.1 status |
+|----|-------------|----------|-------------|
+| FR-1 | On start, discover all keyboard input devices (Linux: `/dev/input`; Windows: Raw Input). | Must | Done (Linux). Windows uses Raw Input, no enumeration. |
+| FR-2 | Play a click sample on each key **press** event. | Must | Done (Linux). Implemented on Windows, untested at runtime. |
+| FR-3 | Ignore auto-repeat events (holding a key must not machine-gun clicks). | Must | Done (Linux). **Not done on Windows.** |
+| FR-4 | `--volume <0-100>` sets output gain; default 50; out-of-range values are rejected with a clear error. | Must | Done |
+| FR-5 | Overlapping presses must layer (fast typing never cuts a click short or drops it). | Must | Done (32-voice pool) |
+| FR-6 | Ctrl+C exits cleanly with exit code 0. | Must | Done |
+| FR-7 | A bundled default click sample so the binary works with no extra files. | Must | Done |
+| FR-8 | `--verbose` prints periodic latency stats (see section 8). | Should | **Not done.** Flag is parsed, prints nothing. |
+| FR-9 | Separate release-sound on key up. | Could | Backlog |
+| FR-10 | `--sound <file.wav>` to use a custom sample. | Could | Backlog |
 
 ## 7. CLI specification
 
@@ -71,7 +71,7 @@ clack [OPTIONS]
 
 OPTIONS:
   -v, --volume <0-100>   Output volume (default: 50)
-      --verbose          Print latency stats once per second
+      --verbose          Print latency stats once per second (not yet implemented)
   -h, --help             Print help
   -V, --version          Print version
 ```
@@ -84,7 +84,7 @@ Exact user-facing messages live in `DESIGN.md`.
 
 | ID | Requirement |
 |----|-------------|
-| NFR-1 | **Latency:** software key-to-callback wait under 1 ms; estimated total (queue wait plus output buffer) p95 under 15 ms on a typical PipeWire or ALSA setup. |
+| NFR-1 | **Latency:** software key-to-callback wait under 1 ms; estimated total (queue wait plus output buffer) p95 under 15 ms on a typical PipeWire, ALSA, or WASAPI setup. **Not yet measured.** |
 | NFR-2 | **Idle cost:** CPU near 0% while no keys are pressed; RSS under about 20 MB. |
 | NFR-3 | **Privacy:** key codes are used only to trigger a sound. They are never written to disk, logged, or sent anywhere. |
 | NFR-4 | **Robustness:** the audio callback never blocks, allocates, or panics. |
@@ -96,11 +96,11 @@ Exact user-facing messages live in `DESIGN.md`.
 
 v0.1 is "done" when all of these are true:
 
-1. Typing on the built-in keyboard and a USB keyboard both produce clicks.
+1. Typing on the built-in keyboard and a USB keyboard both produce clicks. *(Linux: to be confirmed on both devices.)*
 2. `clack --volume 0` is silent and `--volume 100` is clearly louder than `--volume 30`.
 3. Typing at full speed for 30 seconds produces no dropped or clipped clicks and no audible glitches.
-4. `--verbose` shows p95 estimated latency under 15 ms on the author's machine.
-5. Holding a key produces exactly one click.
+4. `--verbose` shows p95 estimated latency under 15 ms on the author's machine. *(Not yet possible: `--verbose` is not implemented.)*
+5. Holding a key produces exactly one click. *(Linux: yes. Windows: not yet.)*
 6. A README lets a stranger set up permissions and run it in under 5 minutes.
 
 ## 10. Constraints
@@ -114,7 +114,9 @@ v0.1 is "done" when all of these are true:
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Reading `/dev/input` needs the `input` group (or root). | First-run failure | Clear error message plus README setup steps. Understand the privacy tradeoff (see `ARCHITECTURE.md`). |
+| Reading `/dev/input` needs the `input` group (or root). | First-run failure | Clear error message plus README setup steps. Privacy tradeoff documented in `ARCHITECTURE.md`. |
+| Windows auto-repeat not filtered. | Holding a key produces repeated clicks on Windows. | Known gap in release notes. Fix by tracking key state per virtual key code. |
+| Windows backend untested at runtime. | Could fail on real hardware despite compiling. | Manual test on a Windows machine before calling it supported. |
 | Key remappers (keyd, kmonad, interception-tools) expose both a real and a virtual device. | Double clicks | Detect and skip duplicates; document as a known issue (see Open Questions). |
 | Audio backend ignores the requested small buffer. | Higher latency than target | Request a fixed small buffer, fall back to default, print the actual buffer size in verbose mode. |
 | Scope creep ("just one more feature"). | Never ships | Non-goals list above; phases have explicit done-states. |
@@ -128,4 +130,4 @@ v0.1 is "done" when all of these are true:
 
 ## 13. Future ideas (not committed)
 
-Release sounds, custom sample packs and Mechvibes pack compatibility, typing-speed dynamics, hotkeys, macOS and Windows, a browser pack-maker.
+Release sounds, custom sample packs and Mechvibes pack compatibility, typing-speed dynamics, hotkeys, macOS, a browser pack-maker.

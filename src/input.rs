@@ -27,7 +27,6 @@ impl InputHandler {
                             for event in events {
                                 // value 1 = press, 0 = release, 2 = auto-repeat
                                 if event.event_type() == EventType::KEY && event.value() == 1 {
-                                    eprintln!("[debug] press");
                                     // Drop the click rather than block if the queue is full.
                                     let _ = tx.try_send(());
                                 }

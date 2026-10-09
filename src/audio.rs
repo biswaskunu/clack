@@ -32,15 +32,6 @@ pub fn start(gain: f32, rx: Receiver<()>) -> Result<Stream> {
     let mut mixer = Mixer::new(gain);
     mixer.set_sample(sample::load_sample(rate)?);
 
-    let click = sample::load_sample(rate)?;
-    let peak = click.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    eprintln!(
-        "[debug] device: {:?}, rate {rate}, channels {channels}, sample len {}, peak {peak}",
-        device.name().ok(),
-        click.len()
-    );
-    mixer.set_sample(click);
-    
     let stream = device
         .build_output_stream(
             &config,

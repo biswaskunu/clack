@@ -41,12 +41,18 @@ fn run() -> Result<()> {
 
     let keyboards = input::InputHandler::list_keyboards();
     if keyboards.is_empty() {
-        eprintln!("clack: no keyboard devices found under /dev/input.");
-        eprintln!("  Is a keyboard connected? Try: ls -l /dev/input/by-id/");
-        eprintln!("  If it is, you may lack permission. Fix:");
-        eprintln!("       sudo usermod -aG input $USER   (then log out and back in)");
+        #[cfg(target_os = "linux")]
+        {
+            eprintln!("clack: no keyboard devices found under /dev/input.");
+            eprintln!("  Is a keyboard connected? Try: ls -l /dev/input/by-id/");
+            eprintln!("  If it is, you may lack permission. Fix:");
+            eprintln!("       sudo usermod -aG input $USER   (then log out and back in)");
+        }
+        #[cfg(windows)]
+        eprintln!("clack: no keyboard input available.");
         std::process::exit(1);
     }
+
     let count = keyboards.len();
 
     // Input threads -> audio callback. Events carry no data: a press is just "()".

@@ -1,61 +1,61 @@
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    Device, StreamConfig,
-};
-use mixer::Mixer;
+use anyhow::{Context, Result, anyhow, bail};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{SampleFormat, Stream};
 use crossbeam_channel::Receiver;
-use anyhow::Error;
 
-pub struct AudioPlayer {
-    mixer: Mixer,
-    rx: Receiver<evdev::InputEvent>,
-}
+use crate::mixer::Mixer;
+use crate::sample;
 
-impl AudioPlayer {
-    pub fn new(gain: f32, rx: Receiver<evdev::InputEvent>) -> Result<(), Error> {
-        let mixer = Mixer::new(gain);
-        Ok(AudioPlayer { mixer, rx })
+/// Open the default output device, load the click at the device's sample rate,
+/// and start playing. The returned `Stream` must be kept alive by the caller.
+pub fn start(gain: f32, rx: Receiver<()>) -> Result<Stream> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| anyhow!("no audio output device found.\n  Check your sound settings (PipeWire / PulseAudio / ALSA) and try again."))?;
+
+    let supported = device
+        .default_output_config()
+        .context("could not read the audio device's default config")?;
+    if supported.sample_format() != SampleFormat::F32 {
+        bail!(
+            "audio device uses {:?} samples; only f32 is supported for now",
+            supported.sample_format()
+        );
     }
 
-    pub fn run(self) -> Result<(), Error> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .expect("no output device available");
-        let config = device.default_output_config().unwrap().into();
+    let config: cpal::StreamConfig = supported.into();
+    let channels = config.channels as usize;
+    let rate = config.sample_rate.0;
 
-        let stream = device
-            .build_output_stream::<f32, _, _>(
-                config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    Self::callback(data, &mut self.mixer, &self.rx);
-                },
-                |err| eprintln!("clack: audio stream error: {err}"),
-                None,
-            )
-            .expect("failed to build output stream");
-        stream.play()?;
+    // All decoding / resampling happens here, before the callback exists.
+    let mut mixer = Mixer::new(gain);
+    mixer.set_sample(sample::load_sample(rate)?);
 
-        // Keep thread alive - the output stream callback
-        // is called by cpal at the device's sampling rate
-        std::thread::sleep(std::time::Duration::from_secs(3600));
+    let click = sample::load_sample(rate)?;
+    let peak = click.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    eprintln!(
+        "[debug] device: {:?}, rate {rate}, channels {channels}, sample len {}, peak {peak}",
+        device.name().ok(),
+        click.len()
+    );
+    mixer.set_sample(click);
+    
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                // Real-time rules: no locks, no allocation, no printing here.
+                while rx.try_recv().is_ok() {
+                    mixer.trigger();
+                }
+                mixer.render(data, channels);
+            },
+            |err| eprintln!("clack: audio stream error: {err}"),
+            None,
+        )
+        .context("failed to build audio output stream")?;
 
-        Ok(())
-    }
-
-    fn callback(
-        data: &mut [f32],
-        mixer: &mut Mixer,
-        rx: &crossbeam_channel::Receiver<evdev::InputEvent>,
-    ) {
-        // Drain queue of pending key presses and trigger voices
-        while let Ok(_event) = rx.try_recv() {
-            // Trigger a voice for each pending key press
-            let _ = mixer.trigger();
-        }
-
-        // Render audio: mix all active voices into output buffer
-        // The mixer handles zeroing, summing voices, and clamping
-        mixer.render(data);
-    }
+    stream.play().context("failed to start audio stream")?;
+    Ok(stream)
 }

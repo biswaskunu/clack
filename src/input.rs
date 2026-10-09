@@ -1,40 +1,40 @@
-use evdev::{Device, KeyCode, enumerate};
+use crossbeam_channel::Sender;
+use evdev::{Device, EventType, KeyCode, enumerate};
 
 pub struct InputHandler;
 
 impl InputHandler {
+    /// `enumerate()` already yields opened devices (and silently skips ones
+    /// we lack permission for), so no second `Device::open` is needed.
     pub fn list_keyboards() -> Vec<Device> {
-        let devices = enumerate().collect::<Vec<_>>();
-        let mut keyboards = Vec::new();
-
-        for (path, raw_dev) in devices {
-            // Check if device supports key events and has KEY_A
-            if let Some(keys) = raw_dev.supported_keys() {
-                if keys.contains(KeyCode::KEY_A) {
-                    // Open the device and add to keyboards
-                    match Device::open(&path) {
-                        Ok(device) => keyboards.push(device),
-                        Err(_) => continue,
-                    }
-                }
-            }
-        }
-        keyboards
+        enumerate()
+            .map(|(_path, dev)| dev)
+            .filter(|dev| {
+                dev.supported_keys()
+                    .is_some_and(|keys| keys.contains(KeyCode::KEY_A))
+            })
+            .collect()
     }
 
-    pub fn start_reading(keyboards: Vec<Device>, tx: crossbeam_channel::Sender<evdev::InputEvent>) {
+    pub fn start_reading(keyboards: Vec<Device>, tx: Sender<()>) {
         for mut keyboard in keyboards {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                // Read events directly from the device
-                if let Ok(mut events) = keyboard.fetch_events() {
-                    for event in &mut events {
-                        // value 1 = press, value 0 = release, value 2 = auto-repeat
-                        // Only handle press events
-                        if event.value() == 1 {
-                            let _ = tx.try_send(event);
-                            println!("press");
+                // fetch_events() returns one batch and must be called repeatedly.
+                loop {
+                    match keyboard.fetch_events() {
+                        Ok(events) => {
+                            for event in events {
+                                // value 1 = press, 0 = release, 2 = auto-repeat
+                                if event.event_type() == EventType::KEY && event.value() == 1 {
+                                    eprintln!("[debug] press");
+                                    // Drop the click rather than block if the queue is full.
+                                    let _ = tx.try_send(());
+                                }
+                            }
                         }
+                        // Keyboard unplugged or read error: this thread quietly ends.
+                        Err(_) => break,
                     }
                 }
             });

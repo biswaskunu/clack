@@ -1,56 +1,72 @@
+mod audio;
 mod input;
 mod mixer;
+mod sample;
 
+use anyhow::Result;
 use clap::Parser;
-use ctrlc;
 use crossbeam_channel::bounded;
-use evdev::InputEvent;
 
 #[derive(Parser)]
-#[command(name = "clack")]
+#[command(name = "clack", version)]
 struct Cli {
-    #[arg(short = 'v', long = "volume", default_value = "50")]
+    /// Output volume
+    #[arg(
+        short = 'v',
+        long = "volume",
+        default_value_t = 50,
+        value_parser = clap::value_parser!(u8).range(0..=100),
+        value_name = "0-100"
+    )]
     volume: u8,
 
-    #[arg(long, default_value_t = false)]
+    /// Print latency stats once per second (not implemented yet)
+    #[arg(long)]
+    #[allow(dead_code)]
     verbose: bool,
 }
 
 fn main() {
+    if let Err(e) = run() {
+        eprintln!("clack: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    if cli.volume > 100 {
-        eprintln!("clack: --volume must be between 0 and 100");
-        std::process::exit(2);
-    }
-
+    // Squared taper (DESIGN.md D5)
     let gain = (cli.volume as f32 / 100.0).powi(2);
-
-    let (tx, _rx) = bounded::<InputEvent>(64);
 
     let keyboards = input::InputHandler::list_keyboards();
     if keyboards.is_empty() {
         eprintln!("clack: no keyboard devices found under /dev/input.");
         eprintln!("  Is a keyboard connected? Try: ls -l /dev/input/by-id/");
+        eprintln!("  If it is, you may lack permission. Fix:");
+        eprintln!("       sudo usermod -aG input $USER   (then log out and back in)");
         std::process::exit(1);
     }
+    let count = keyboards.len();
 
-    let mut mixer = mixer::Mixer::new(gain);
+    // Input threads -> audio callback. Events carry no data: a press is just "()".
+    let (tx, rx) = bounded::<()>(64);
+
+    // The stream must stay alive (and on this thread) for sound to play.
+    let _stream = audio::start(gain, rx)?;
 
     input::InputHandler::start_reading(keyboards, tx);
 
-    if cli.verbose {
-        println!(
-            "clack: listening on volume {}. Press Ctrl+C to stop.",
-            cli.volume
-        );
-    }
+    println!(
+        "clack: listening on {count} keyboard(s), volume {}. Press Ctrl+C to stop.",
+        cli.volume
+    );
 
+    let (stop_tx, stop_rx) = bounded::<()>(1);
     ctrlc::set_handler(move || {
-        std::process::exit(0);
-    })
-    .expect("Error setting Ctrl-C handler");
+        let _ = stop_tx.try_send(());
+    })?;
+    let _ = stop_rx.recv();
 
-    // Keep main alive - input threads handle output
-    std::thread::sleep(std::time::Duration::from_secs(3600));
+    Ok(())
 }

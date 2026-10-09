@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 const MAX_VOICES: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -9,6 +7,7 @@ struct Voice {
     started: u64,
 }
 
+/// Pure mixing logic: no I/O, no allocation after `set_sample`.
 #[derive(Clone)]
 pub struct Mixer {
     sample: Vec<f32>,
@@ -19,15 +18,13 @@ pub struct Mixer {
 
 impl Mixer {
     pub fn new(gain: f32) -> Self {
-        let sample = Vec::new();
-        let voices = [Voice {
-            pos: 0,
-            active: false,
-            started: 0,
-        }; MAX_VOICES];
         Mixer {
-            sample,
-            voices,
+            sample: Vec::new(),
+            voices: [Voice {
+                pos: 0,
+                active: false,
+                started: 0,
+            }; MAX_VOICES],
             gain,
             seq: 0,
         }
@@ -37,71 +34,124 @@ impl Mixer {
         self.sample = sample;
     }
 
+    #[allow(dead_code)]
     pub fn set_gain(&mut self, gain: f32) {
         self.gain = gain;
     }
 
-    /// Trigger a new voice, stealing the oldest if pool is full.
-    /// Returns the index of the voice triggered.
-    pub fn trigger(&mut self) -> usize {
+    /// Start a new voice, stealing the oldest if the pool is full.
+    /// Returns the slot used, or None if there is no sample loaded.
+    pub fn trigger(&mut self) -> Option<usize> {
+        if self.sample.is_empty() {
+            return None;
+        }
         self.seq += 1;
-        let slot = self
-            .voices
-            .iter()
-            .position(|v| !v.active)
-            .unwrap_or_else(|| {
-                let oldest = self
-                    .voices
-                    .iter()
-                    .min_by_key(|v| v.started)
-                    .map(|v| v.started)
-                    .unwrap();
-                self.voices
-                    .iter()
-                    .position(|v| v.started == oldest)
-                    .map(|i| {
-                        self.voices[i].started = self.seq;
-                        i
-                    })
-                    .unwrap_or(0)
-            });
 
-        self.voices[slot].active = true;
-        self.voices[slot].pos = 0;
-        self.voices[slot].started = self.seq;
-        slot
+        let slot = match self.voices.iter().position(|v| !v.active) {
+            Some(i) => i,
+            None => self
+                .voices
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, v)| v.started)
+                .map(|(i, _)| i)
+                .unwrap_or(0),
+        };
+
+        self.voices[slot] = Voice {
+            pos: 0,
+            active: true,
+            started: self.seq,
+        };
+        Some(slot)
     }
 
-    /// Render one buffer: mix all active voices into out, advance positions,
-    /// deactivate finished voices, and clamp output to [-1, 1].
-    pub fn render(&mut self, out: &mut [f32]) {
-        // Zero the output buffer
-        for sample in out.iter_mut() {
-            *sample = 0.0;
-        }
+    /// Fill `out` (interleaved, `channels` per frame) with the mix of all voices.
+    /// Each voice advances one sample per *frame*, not per buffer.
+    pub fn render(&mut self, out: &mut [f32], channels: usize) {
+        let channels = channels.max(1);
+        let sample = &self.sample;
+        let voices = &mut self.voices;
+        let gain = self.gain;
 
-        // Sum all active voices into the buffer
-        for voice in self.voices.iter_mut() {
-            if voice.active && voice.pos < self.sample.len() {
-                let val = self.sample[voice.pos] * self.gain;
-                // Add to each sample in the output buffer
-                for sample_idx in 0..out.len() {
-                    out[sample_idx] += val;
-                }
-                voice.pos += 1;
-                if voice.pos >= self.sample.len() {
-                    voice.active = false;
+        for frame in out.chunks_mut(channels) {
+            let mut acc = 0.0f32;
+            for voice in voices.iter_mut() {
+                if voice.active {
+                    acc += sample[voice.pos];
+                    voice.pos += 1;
+                    if voice.pos >= sample.len() {
+                        voice.active = false;
+                    }
                 }
             }
+            let s = (acc * gain).clamp(-1.0, 1.0);
+            frame.fill(s); // same mono sample on every channel
         }
+    }
+}
 
-        // Clip to [-1, 1]
-        for sample in out.iter_mut() {
-            if *sample > 1.0 {
-                *sample = 1.0;
-            } else if *sample < -1.0 {
-                *sample = -1.0;
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mixer_with(sample: Vec<f32>, gain: f32) -> Mixer {
+        let mut m = Mixer::new(gain);
+        m.set_sample(sample);
+        m
+    }
+
+    #[test]
+    fn no_sample_means_no_voice() {
+        let mut m = Mixer::new(1.0);
+        assert!(m.trigger().is_none());
+    }
+
+    #[test]
+    fn plays_sample_across_frames_and_channels() {
+        let mut m = mixer_with(vec![0.1, 0.2, 0.3], 1.0);
+        m.trigger();
+        let mut out = [0.0f32; 8]; // 4 frames x 2 channels
+        m.render(&mut out, 2);
+        assert_eq!(out, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn gain_applies() {
+        let mut m = mixer_with(vec![0.5], 0.5);
+        m.trigger();
+        let mut out = [0.0f32; 2];
+        m.render(&mut out, 1);
+        assert_eq!(out[0], 0.25);
+    }
+
+    #[test]
+    fn clips_to_range() {
+        let mut m = mixer_with(vec![0.9; 4], 1.0);
+        m.trigger();
+        m.trigger();
+        let mut out = [0.0f32; 1];
+        m.render(&mut out, 1);
+        assert_eq!(out[0], 1.0);
+    }
+
+    #[test]
+    fn steals_oldest_when_full() {
+        let mut m = mixer_with(vec![0.1; 1000], 1.0);
+        for _ in 0..MAX_VOICES {
+            m.trigger();
         }
+        // slot 0 was started first, so it is the oldest
+        assert_eq!(m.trigger(), Some(0));
+        assert_eq!(m.trigger(), Some(1));
+    }
+
+    #[test]
+    fn voice_finishes() {
+        let mut m = mixer_with(vec![0.1, 0.1], 1.0);
+        m.trigger();
+        let mut out = [0.0f32; 4];
+        m.render(&mut out, 1);
+        assert!(m.voices.iter().all(|v| !v.active));
     }
 }

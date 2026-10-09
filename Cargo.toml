@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-evdev = "0.13"
-crossbeam-queue = "0.3"
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+cpal = "0.15"
 crossbeam-channel = "0.5"
 ctrlc = "3.5"
-clap = { version = "4.6", features = ["derive"] }
+evdev = "0.13"
 hound = "3.5"
-anyhow = "1.0"
-crossbeam = "0.8"

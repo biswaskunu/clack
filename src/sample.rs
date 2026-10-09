@@ -1,36 +1,52 @@
-use hound::WavReader;
-use std::fs::File;
+use hound::{SampleFormat, WavReader};
+use std::io::Cursor;
 
-pub struct ClickSample {
-    pub data: Vec<f32>,
-    pub sample_rate: u32,
-}
+// Bundled into the binary, so there's no runtime file path to get wrong.
+static PRESS_WAV: &[u8] = include_bytes!("../assets/press.wav");
 
-pub fn load_sample() -> anyhow::Result<ClickSample> {
-    let mut reader = WavReader::new(File::open("assets/press.wav"))?;
-    let sample_rate = reader.sample_rate();
-    let channels = reader.channels();
-    let mut data = Vec::new();
+/// Decode the click, mix to mono, and resample to `target_rate`.
+/// Runs once at startup, never on the audio thread.
+pub fn load_sample(target_rate: u32) -> anyhow::Result<Vec<f32>> {
+    let mut reader = WavReader::new(Cursor::new(PRESS_WAV))?;
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
 
-    for sample in reader.samples::<i16>() {
-        let s = sample? as f32 / i16::MAX as f32;
-        data.push(s);
-    }
-
-    // If stereo, convert to mono by averaging channels
-    let mono_data: Vec<f32> = if channels == 2 {
-        let mut mono = Vec::new();
-        let mut iter = data.chunks_exact(2);
-        for chunk in &mut iter {
-            mono.push((chunk[0] + chunk[1]) / 2.0);
+    let interleaved: Vec<f32> = match spec.sample_format {
+        SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / max))
+                .collect::<Result<_, _>>()?
         }
-        mono
-    } else {
-        data
     };
 
-    Ok(ClickSample {
-        data: mono_data,
-        sample_rate,
-    })
+    // Average channels down to mono.
+    let mono: Vec<f32> = interleaved
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect();
+
+    Ok(resample_linear(&mono, spec.sample_rate, target_rate))
+}
+
+fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to || input.is_empty() {
+        return input.to_vec();
+    }
+    let ratio = to as f64 / from as f64;
+    let out_len = (input.len() as f64 * ratio).round() as usize;
+    let last = input.len() - 1;
+
+    (0..out_len)
+        .map(|i| {
+            let pos = i as f64 / ratio;
+            let idx = (pos.floor() as usize).min(last);
+            let frac = (pos - idx as f64) as f32;
+            let a = input[idx];
+            let b = input[(idx + 1).min(last)];
+            a + (b - a) * frac
+        })
+        .collect()
 }
